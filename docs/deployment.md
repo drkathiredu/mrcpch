@@ -15,7 +15,7 @@ Cloudflare Pages connects directly to your GitHub repository, building and deplo
    - **Root Directory**: Leave as `/` (root) so the root `vite.config.ts` handles the build, or set to `frontend` if deploying a sub-project scope.
 4. **Setup the Edge API Proxy (`_redirects`)**:
    - Open `/frontend/public/_redirects` in your code editor.
-   - Replace the default placeholder `https://mrcpch-study-platform.your-subdomain.workers.dev` with your actual deployed Cloudflare Worker API subdomain.
+   - Replace the default example `https://mrcpch-study-platform.your-subdomain.workers.dev` with your actual deployed Cloudflare Worker API subdomain.
    - Commit and push this change to GitHub. Cloudflare Pages will read the `_redirects` file, redirecting `/api/*` directly to your Worker backend at the edge without any CORS issues or manual DNS rewrites.
 5. **Environment Variables (Optional)**: Add any public configuration variables, such as `VITE_TURNSTILE_SITE_KEY` if using Cloudflare Turnstile protection, to the Pages configuration panel.
 6. **Deploy**: Click **Save and Deploy**. Cloudflare automatically compiles and hosts your SPA. Client-side routes (like `/banks` and `/materials`) will resolve gracefully through index.html fallback rules.

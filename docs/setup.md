@@ -24,7 +24,7 @@ Follow these steps to run the MRCPCH Study Platform locally.
    ```bash
    cp .env.example .env
    ```
-   Open the `.env` file and replace placeholder variables with actual values (JWT secrets, site keys, etc.).
+   Open the `.env` file and replace deployment variables with actual values (JWT secrets, site keys, etc.).
 
 ## Starting Local Environments
 
