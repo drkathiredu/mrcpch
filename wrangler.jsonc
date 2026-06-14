@@ -17,12 +17,6 @@
       "bucket_name": "mrcpch-materials-bucket"
     }
   ],
-  "kv_namespaces": [
-    {
-      "binding": "KV",
-      "id": "00000000000000000000000000000000"
-    }
-  ],
   "observability": {
     "enabled": true
   }

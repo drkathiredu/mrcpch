@@ -5,7 +5,7 @@
 
 export interface Env {
   DB: D1Database;
-  KV: KVNamespace;
+  KV?: KVNamespace;
   BUCKET: R2Bucket;
   JWT_SECRET: string;
 }
@@ -218,7 +218,7 @@ export default {
       if (method === 'GET') {
         // Try to fetch from KV caching for fast read first
         const cacheKey = 'mrcpch_kv_banks';
-        const cached = await env.KV.get(cacheKey);
+        const cached = env.KV ? await env.KV.get(cacheKey) : null;
         if (cached) {
           return jsonResponse(JSON.parse(cached), 200, { 'X-Cache-Status': 'HIT' });
         }
@@ -242,7 +242,9 @@ export default {
         }));
 
         // Write into KV Cache
-        await env.KV.put(cacheKey, JSON.stringify(formattedResults), { expirationTtl: 300 }); // 5 min cache
+        if (env.KV) {
+          await env.KV.put(cacheKey, JSON.stringify(formattedResults), { expirationTtl: 300 }); // 5 min cache
+        }
         return jsonResponse(formattedResults);
       }
 
@@ -260,7 +262,9 @@ export default {
         ).bind(newBankId, name, description, category, currentUser.id).run();
 
         // Evict key from KV Cache
-        await env.KV.delete('mrcpch_kv_banks');
+        if (env.KV) {
+          await env.KV.delete('mrcpch_kv_banks');
+        }
 
         return jsonResponse({ id: newBankId, name, description, category }, 201);
       }
@@ -273,7 +277,9 @@ export default {
         ).bind(name, description, category, isArchived ? 1 : 0, bankId).run();
 
         // Evict cache
-        await env.KV.delete('mrcpch_kv_banks');
+        if (env.KV) {
+          await env.KV.delete('mrcpch_kv_banks');
+        }
         return jsonResponse({ message: 'Question bank updated' });
       }
 
@@ -281,7 +287,9 @@ export default {
       if (method === 'DELETE' && bankId) {
         await env.DB.prepare('DELETE FROM question_banks WHERE id = ?').bind(bankId).run();
         // Evict cache
-        await env.KV.delete('mrcpch_kv_banks');
+        if (env.KV) {
+          await env.KV.delete('mrcpch_kv_banks');
+        }
         return jsonResponse({ message: 'Question bank deleted' });
       }
     }
@@ -338,7 +346,9 @@ export default {
         ).run();
 
         // Clear cached banks count
-        await env.KV.delete('mrcpch_kv_banks');
+        if (env.KV) {
+          await env.KV.delete('mrcpch_kv_banks');
+        }
 
         return jsonResponse({ id: newQuestId, question, options, correctAnswer, difficulty }, 201);
       }
@@ -497,7 +507,9 @@ export default {
           await env.DB.batch(batch);
         }
 
-        await env.KV.delete('mrcpch_kv_banks');
+        if (env.KV) {
+          await env.KV.delete('mrcpch_kv_banks');
+        }
 
         return jsonResponse({
           success: true,
