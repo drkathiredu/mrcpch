@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Question, ExamAttempt, User } from '../types';
 import { api } from '../api';
-import { ChevronLeft, ChevronRight, Bookmark, Clock, Flag, CheckCircle, XCircle, AlertCircle, RefreshCw, Eye } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Bookmark, Clock, Flag, CheckCircle, XCircle, AlertCircle, RefreshCw, Eye, Sparkles, Lightbulb } from 'lucide-react';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface ExamEngineProps {
   user: User;
@@ -29,6 +30,134 @@ export default function ExamEngine({ user, bankId, onBack }: ExamEngineProps) {
   const [submittingLoader, setSubmittingLoader] = useState(false);
   
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Gemini AI States
+  const [aiExplain, setAiExplain] = useState<Record<string, string>>({});
+  const [aiMnemonic, setAiMnemonic] = useState<Record<string, string>>({});
+  const [aiLoading, setAiLoading] = useState<Record<string, 'explain' | 'mnemonic' | null>>({});
+  const [aiError, setAiError] = useState<Record<string, string>>({});
+
+  const fetchAiExplanation = async (q: Question) => {
+    setAiLoading(prev => ({ ...prev, [q.id]: 'explain' }));
+    setAiError(prev => ({ ...prev, [q.id]: '' }));
+    try {
+      const response = await fetch('/api/gemini/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: q.question,
+          options: q.options,
+          correctAnswer: q.correctAnswer,
+          explanation: q.explanation,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('Could not retrieve Gemini clinical analysis. Check your API token details.');
+      }
+      const data = await response.json();
+      setAiExplain(prev => ({ ...prev, [q.id]: data.explanation }));
+    } catch (err: any) {
+      setAiError(prev => ({ ...prev, [q.id]: err.message || 'AI tutoring temporarily unavailable.' }));
+    } finally {
+      setAiLoading(prev => ({ ...prev, [q.id]: null }));
+    }
+  };
+
+  const fetchAiMnemonic = async (q: Question) => {
+    setAiLoading(prev => ({ ...prev, [q.id]: 'mnemonic' }));
+    setAiError(prev => ({ ...prev, [q.id]: '' }));
+    try {
+      const response = await fetch('/api/gemini/mnemonic', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic: q.tags?.join(', ') || q.question.substring(0, 40),
+          context: `Question: ${q.question}\nCorrect Option: ${q.options[q.correctAnswer]}`,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('Could not formulate Mnemonic. Verify key setups.');
+      }
+      const data = await response.json();
+      setAiMnemonic(prev => ({ ...prev, [q.id]: data.mnemonic }));
+    } catch (err: any) {
+      setAiError(prev => ({ ...prev, [q.id]: err.message || 'AI mnemonic helper offline.' }));
+    } finally {
+      setAiLoading(prev => ({ ...prev, [q.id]: null }));
+    }
+  };
+
+  const renderGeminiSupportOfQuestion = (q: Question) => {
+    const isExplLoading = aiLoading[q.id] === 'explain';
+    const isMnemLoading = aiLoading[q.id] === 'mnemonic';
+    const currentExpl = aiExplain[q.id];
+    const currentMnem = aiMnemonic[q.id];
+    const currentErr = aiError[q.id];
+
+    return (
+      <div className="mt-4 border-t border-slate-100 dark:border-slate-800 pt-4 space-y-3">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => fetchAiExplanation(q)}
+            disabled={isExplLoading || isMnemLoading}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition ${
+              currentExpl
+                ? 'bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100 dark:bg-teal-950/40 dark:border-teal-800 dark:text-teal-300'
+                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300'
+            } disabled:opacity-55`}
+          >
+            <Sparkles className={`w-3.5 h-3.5 text-teal-600 ${isExplLoading ? 'animate-spin' : ''}`} />
+            {isExplLoading ? 'Consulting Tutor...' : currentExpl ? 'Clinical Analysis Unlocked' : 'Ask Clinical Advisor (AI)'}
+          </button>
+
+          <button
+            onClick={() => fetchAiMnemonic(q)}
+            disabled={isExplLoading || isMnemLoading}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition ${
+              currentMnem
+                ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:border-indigo-800 dark:text-indigo-300'
+                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300'
+            } disabled:opacity-55`}
+          >
+            <Lightbulb className={`w-3.5 h-3.5 text-indigo-500 ${isMnemLoading ? 'animate-bounce' : ''}`} />
+            {isMnemLoading ? 'Formulating...' : currentMnem ? 'Memory Trick Unlocked' : 'Get Mnemonic Trick (AI)'}
+          </button>
+        </div>
+
+        {(isExplLoading || isMnemLoading) && (
+          <div className="p-4 bg-slate-50/50 dark:bg-slate-800/40 rounded-xl border border-slate-200/50 dark:border-slate-700 animate-pulse space-y-2">
+            <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded w-1/4 animate-pulse"></div>
+            <div className="h-2.5 bg-slate-200 dark:bg-slate-700 rounded w-3/4 animate-pulse"></div>
+            <div className="h-2.5 bg-slate-200 dark:bg-slate-700 rounded w-5/6 animate-pulse"></div>
+          </div>
+        )}
+
+        {currentErr && (
+          <p className="text-[11px] font-medium font-mono text-amber-600 bg-amber-50 border border-amber-100 p-2.5 rounded-lg dark:bg-amber-950/20 dark:border-amber-900/40 dark:text-amber-400">
+            ⚠️ {currentErr}
+          </p>
+        )}
+
+        {currentExpl && !isExplLoading && (
+          <div className="p-5 bg-teal-50/10 border border-teal-100/40 rounded-xl space-y-2 dark:bg-teal-950/10 dark:border-teal-900/30">
+            <span className="text-[10px] font-bold text-teal-600 dark:text-teal-400 uppercase tracking-wider block border-b border-teal-100/40 dark:border-teal-900/30 pb-1 mb-2">
+              📋 Clinical Board Analysis Summary
+            </span>
+            <MarkdownRenderer content={currentExpl} />
+          </div>
+        )}
+
+        {currentMnem && !isMnemLoading && (
+          <div className="p-5 bg-indigo-50/10 border border-indigo-100/40 rounded-xl space-y-2 dark:bg-indigo-950/10 dark:border-indigo-900/30">
+            <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider block border-b border-indigo-100/40 dark:border-indigo-900/30 pb-1 mb-2">
+              🧠 Clinical Memory Accelerator
+            </span>
+            <MarkdownRenderer content={currentMnem} />
+          </div>
+        )}
+      </div>
+    );
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -324,6 +453,7 @@ export default function ExamEngine({ user, bankId, onBack }: ExamEngineProps) {
                   <span className="font-bold block text-slate-800 mb-1">Clinical Rationale:</span>
                   {q.explanation}
                 </div>
+                {renderGeminiSupportOfQuestion(q)}
               </div>
             );
           })}
@@ -460,6 +590,7 @@ export default function ExamEngine({ user, bankId, onBack }: ExamEngineProps) {
                   <span className="font-bold text-slate-800">Explanation: </span>
                   {currentQuestion.explanation}
                 </p>
+                {renderGeminiSupportOfQuestion(currentQuestion)}
               </div>
             )}
           </div>

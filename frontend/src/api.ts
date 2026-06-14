@@ -423,24 +423,4 @@ export const api = {
     }
     return newMaterial;
   },
-
-  // Dynamic state query to verify if the Cloudflare Edge API is reachable
-  async checkConnection(): Promise<boolean> {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1800); // Fail fast
-      
-      // Hit a safe public GET endpoint (e.g., question-banks)
-      const response = await fetch(`${API_BASE_URL}/api/question-banks`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      
-      // If we get a response, the backend API is alive
-      return response.status === 200 || response.status === 401;
-    } catch {
-      return false;
-    }
-  },
 };
-

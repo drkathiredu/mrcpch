@@ -13,7 +13,6 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [page, setPage] = useState<string>('dashboard'); // dashboard | banks | exam | materials | admin_panel | settings
   const [selectedBankId, setSelectedBankId] = useState<string | null>(null);
-  const [backendAlive, setBackendAlive] = useState<boolean | null>(null);
   
   // Theme state
   const [darkMode, setDarkMode] = useState(false);
@@ -41,15 +40,7 @@ export default function App() {
       setDarkMode(true);
       document.documentElement.classList.add('dark');
     }
-
-    // Check Cloudflare Edge API connection state
-    const diagnoseServer = async () => {
-      const isAlive = await api.checkConnection();
-      setBackendAlive(isAlive);
-    };
-    diagnoseServer();
   }, []);
-
 
   const toggleTheme = () => {
     const nextDark = !darkMode;
@@ -173,18 +164,6 @@ export default function App() {
               <p className="text-xs font-semibold text-red-500 font-mono bg-red-50 p-2 text-center rounded border border-red-100">{authError}</p>
             )}
 
-            {/* Zero-Config Reassurance Advice */}
-            <div className={`p-3 rounded-lg text-[11px] leading-relaxed border flex items-start gap-2 ${
-              darkMode 
-                ? 'bg-emerald-950/20 border-emerald-800/30 text-emerald-300' 
-                : 'bg-emerald-50/50 border-emerald-100 text-emerald-800'
-            }`}>
-              <span className="text-emerald-500 font-bold block mt-0.5">⚡ Info</span>
-              <span className="font-normal">
-                <strong>Zero Setup Required:</strong> Since you have no secrets configured, the app runs in built-in <strong>Local Sandbox Mode</strong> using browser state. All tests, answers, and mock profiles work instantly!
-              </span>
-            </div>
-
             {/* Cloudflare Turnstile Bot protection widget visualization */}
             <div className="border border-slate-100/80 bg-slate-50/50 p-3 rounded-lg flex items-center justify-between text-xs text-slate-500">
               <span className="flex items-center gap-1.5 font-semibold">
@@ -193,7 +172,6 @@ export default function App() {
               </span>
               <span className="font-mono text-[9px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-bold uppercase">Pass</span>
             </div>
-
 
             <button 
               type="submit"
@@ -231,28 +209,10 @@ export default function App() {
             <Activity className="w-5 h-5" />
           </div>
           <div>
-            <div className="flex items-center gap-1.5">
-              <h1 className="font-bold tracking-tight text-base leading-none text-slate-800 dark:text-slate-100">MRCPCH Hub</h1>
-              {backendAlive === true ? (
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-extrabold bg-teal-50 text-teal-600 dark:bg-teal-950/30 dark:text-teal-400 border border-teal-100/60 dark:border-teal-900/60 uppercase tracking-wide cursor-help" title="Connected to Edge Server & Cloud SQL D1 Database.">
-                  <span className="w-1 h-1 rounded-full bg-teal-500 mr-1 animate-pulse"></span>
-                  Cloud Live
-                </span>
-              ) : backendAlive === false ? (
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-extrabold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 uppercase tracking-wide cursor-help" title="No Cloud server detected. Automatically using built-in high-performance local web storage. Zero setup required!">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mr-1"></span>
-                  Local State (No Setup)
-                </span>
-              ) : (
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-extrabold bg-amber-50 text-amber-700 border border-amber-100/60 uppercase tracking-wide animate-pulse">
-                  Detecting...
-                </span>
-              )}
-            </div>
+            <h1 className="font-bold tracking-tight text-base leading-none text-slate-800">MRCPCH Hub</h1>
             <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold font-sans mt-1">Edge Board</p>
           </div>
         </div>
-
 
         {/* Central Nav Actions */}
         <div className="hidden md:flex items-center gap-1">
