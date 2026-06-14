@@ -8,6 +8,9 @@ export interface Env {
   KV: KVNamespace;
   BUCKET: R2Bucket;
   JWT_SECRET: string;
+  GOOGLE_CLIENT_ID?: string;
+  TURNSTILE_SECRET_KEY?: string;
+  R2_PUBLIC_BASE_URL?: string;
 }
 
 // Helper to generate simple JSON responses
@@ -37,22 +40,74 @@ function handleOptions() {
   });
 }
 
-// Simple JWT generation and verification mockup for lightweight edge compatibility
-async function generateSimpleToken(user: { id: string; email: string; role: string }) {
-  const payload = btoa(JSON.stringify({ ...user, exp: Date.now() + 86400000 })); // 24 hours
-  return `jwt_mock_${payload}`;
-}
 
-function verifySimpleToken(token: string) {
-  if (!token || !token.startsWith('jwt_mock_')) return null;
-  try {
-    const payloadEncoded = token.replace('jwt_mock_', '');
-    const user = JSON.parse(atob(payloadEncoded));
-    if (user.exp < Date.now()) return null; // Expired
-    return user;
-  } catch (e) {
-    return null;
-  }
+type Role = 'Student' | 'Admin' | 'SuperAdmin';
+type AuthUser = { id: string; email: string; role: Role; exp: number; typ: 'access' | 'refresh' };
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const ACCESS_TTL_SECONDS = 60 * 60;
+const REFRESH_TTL_SECONDS = 60 * 60 * 24 * 30;
+const allowedRoles = new Set(['Student', 'Admin', 'SuperAdmin']);
+
+function id(prefix: string) { return `${prefix}_${crypto.randomUUID()}`; }
+function b64url(bytes: ArrayBuffer | Uint8Array) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let bin = ''; for (const b of u8) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function fromB64url(input: string) {
+  const b64 = input.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - input.length % 4) % 4);
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+async function hmacKey(secret: string) {
+  return crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+async function signJwt(env: Env, user: { id: string; email: string; role: Role }, typ: 'access' | 'refresh') {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = { ...user, typ, iat: now, exp: now + (typ === 'access' ? ACCESS_TTL_SECONDS : REFRESH_TTL_SECONDS), jti: id('tok') };
+  const head = b64url(enc.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const body = b64url(enc.encode(JSON.stringify(payload)));
+  const data = `${head}.${body}`;
+  const sig = await crypto.subtle.sign('HMAC', await hmacKey(env.JWT_SECRET), enc.encode(data));
+  return `${data}.${b64url(sig)}`;
+}
+async function verifyJwt(env: Env, token: string): Promise<AuthUser | null> {
+  const parts = token.split('.'); if (parts.length !== 3) return null;
+  const [head, body, sig] = parts;
+  const ok = await crypto.subtle.verify('HMAC', await hmacKey(env.JWT_SECRET), fromB64url(sig), enc.encode(`${head}.${body}`));
+  if (!ok) return null;
+  const payload = JSON.parse(dec.decode(fromB64url(body))) as AuthUser;
+  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload;
+}
+async function hashPassword(password: string, salt: string = crypto.randomUUID() as string) {
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode(salt), iterations: 210000, hash: 'SHA-256' }, key, 256);
+  return `pbkdf2$210000$${salt}$${b64url(bits)}`;
+}
+async function verifyPassword(password: string, stored: string) {
+  const [, , salt, hash] = stored.split('$');
+  if (!salt || !hash) return false;
+  return await hashPassword(password, salt) === stored;
+}
+async function issueSession(env: Env, user: { id: string; email: string; role: Role }) {
+  const token = await signJwt(env, user, 'access');
+  const refreshToken = await signJwt(env, user, 'refresh');
+  await env.KV.put(`refresh:${user.id}:${refreshToken.slice(-32)}`, '1', { expirationTtl: REFRESH_TTL_SECONDS });
+  return { token, refreshToken };
+}
+function requireRole(user: AuthUser | null, roles: Role[]) { return !!user && roles.includes(user.role); }
+async function verifyTurnstile(request: Request, env: Env, token?: string) {
+  if (!env.TURNSTILE_SECRET_KEY) return true;
+  if (!token) return false;
+  const form = new FormData(); form.append('secret', env.TURNSTILE_SECRET_KEY); form.append('response', token); form.append('remoteip', request.headers.get('CF-Connecting-IP') || '');
+  const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form });
+  const json = await res.json() as { success: boolean };
+  return json.success;
+}
+function assertQuestion(q: any, i = 0) {
+  if (!q.question || !Array.isArray(q.options) || q.options.length < 2 || !Number.isInteger(q.correctAnswer)) throw new Error(`Validation failure at index ${i}: incomplete fields.`);
+  if (q.correctAnswer < 0 || q.correctAnswer >= q.options.length) throw new Error(`Validation failure at index ${i}: invalid correctAnswer index.`);
 }
 
 export default {
@@ -69,7 +124,7 @@ export default {
     // 1. JWT Authentication Parser Middleware
     const authHeader = request.headers.get('Authorization') || '';
     const token = authHeader.replace(/^Bearer\s+/, '');
-    const currentUser = verifySimpleToken(token);
+    const currentUser = await verifyJwt(env, token);
 
     // ==========================================
     // AUTHENTICATION CONTROLLER
@@ -78,15 +133,14 @@ export default {
     // POST /api/auth/register
     if (path === '/api/auth/register' && method === 'POST') {
       try {
-        const { email, password, fullName } = await request.json() as any;
-        if (!email || !password || !fullName) {
+        const { email, password, fullName, turnstileToken } = await request.json() as any;
+        if (!email || !password || !fullName || !(await verifyTurnstile(request, env, turnstileToken))) {
           return jsonResponse({ error: 'Missing required fields' }, 400);
         }
 
         // Generate ID
-        const userId = 'u_' + Math.random().toString(36).substring(2, 11);
-        // Simple password hash (bcrypt is used in production, here we use simple hash for edge lightweight)
-        const passwordHash = btoa(password);
+        const userId = id('u');
+        const passwordHash = await hashPassword(password);
 
         await env.DB.prepare(
           'INSERT INTO users (id, email, password_hash, full_name, role, is_active) VALUES (?, ?, ?, ?, "Student", 1)'
@@ -94,9 +148,9 @@ export default {
         .bind(userId, email, passwordHash, fullName)
         .run();
 
-        const tokenString = await generateSimpleToken({ id: userId, email, role: 'Student' });
+        const session = await issueSession(env, { id: userId, email, role: 'Student' });
         return jsonResponse({
-          token: tokenString,
+          ...session,
           user: { id: userId, email, fullName, role: 'Student', isActive: true },
         }, 201);
       } catch (err: any) {
@@ -107,8 +161,8 @@ export default {
     // POST /api/auth/login
     if (path === '/api/auth/login' && method === 'POST') {
       try {
-        const { email, password } = await request.json() as any;
-        if (!email || !password) {
+        const { email, password, turnstileToken } = await request.json() as any;
+        if (!email || !password || !(await verifyTurnstile(request, env, turnstileToken))) {
           return jsonResponse({ error: 'Missing required credentials' }, 400);
         }
 
@@ -116,7 +170,7 @@ export default {
           'SELECT * FROM users WHERE email = ? LIMIT 1'
         ).bind(email).first();
 
-        if (!userRecord || userRecord.password_hash !== btoa(password)) {
+        if (!userRecord || !(await verifyPassword(password, userRecord.password_hash))) {
           return jsonResponse({ error: 'Invalid email or password' }, 401);
         }
 
@@ -124,14 +178,14 @@ export default {
           return jsonResponse({ error: 'Your account has been deactivated' }, 403);
         }
 
-        const tokenString = await generateSimpleToken({
+        const session = await issueSession(env, {
           id: userRecord.id,
           email: userRecord.email,
           role: userRecord.role,
         });
 
         return jsonResponse({
-          token: tokenString,
+          ...session,
           user: {
             id: userRecord.id,
             email: userRecord.email,
@@ -145,8 +199,41 @@ export default {
       }
     }
 
+
+    // POST /api/auth/google - verifies a Google ID token and creates/updates the user.
+    if (path === '/api/auth/google' && method === 'POST') {
+      const { idToken } = await request.json() as any;
+      if (!idToken || !env.GOOGLE_CLIENT_ID) return jsonResponse({ error: 'Missing Google OAuth configuration' }, 400);
+      const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+      if (!googleRes.ok) return jsonResponse({ error: 'Invalid Google token' }, 401);
+      const profile = await googleRes.json() as { aud: string; email: string; name?: string; sub: string; email_verified?: string };
+      if (profile.aud !== env.GOOGLE_CLIENT_ID || profile.email_verified !== 'true') return jsonResponse({ error: 'Google token audience or email verification failed' }, 401);
+      let userRecord: any = await env.DB.prepare('SELECT * FROM users WHERE email = ? LIMIT 1').bind(profile.email).first();
+      if (!userRecord) {
+        const userId = id('u');
+        await env.DB.prepare('INSERT INTO users (id, email, password_hash, full_name, role, is_active) VALUES (?, ?, ?, ?, "Student", 1)')
+          .bind(userId, profile.email, await hashPassword(crypto.randomUUID()), profile.name || profile.email).run();
+        userRecord = { id: userId, email: profile.email, full_name: profile.name || profile.email, role: 'Student', is_active: 1 };
+      }
+      if (userRecord.is_active === 0) return jsonResponse({ error: 'Your account has been deactivated' }, 403);
+      const session = await issueSession(env, { id: userRecord.id, email: userRecord.email, role: userRecord.role });
+      return jsonResponse({ ...session, user: { id: userRecord.id, email: userRecord.email, fullName: userRecord.full_name, role: userRecord.role, isActive: true } });
+    }
+
+    // POST /api/auth/refresh - exchanges a valid refresh token for a new session.
+    if (path === '/api/auth/refresh' && method === 'POST') {
+      const { refreshToken } = await request.json() as any;
+      const refreshUser = await verifyJwt(env, refreshToken || '');
+      if (!refreshUser || refreshUser.typ !== 'refresh') return jsonResponse({ error: 'Invalid refresh token' }, 401);
+      const cached = await env.KV.get(`refresh:${refreshUser.id}:${refreshToken.slice(-32)}`);
+      if (!cached) return jsonResponse({ error: 'Refresh token has been revoked' }, 401);
+      const session = await issueSession(env, { id: refreshUser.id, email: refreshUser.email, role: refreshUser.role });
+      return jsonResponse(session);
+    }
+
     // POST /api/auth/logout
     if (path === '/api/auth/logout' && method === 'POST') {
+      if (currentUser) await env.KV.delete(`refresh:${currentUser.id}:${token.slice(-32)}`);
       return jsonResponse({ message: 'Successfully logged out' });
     }
 
@@ -180,10 +267,10 @@ export default {
       // POST /api/users
       if (method === 'POST') {
         const { email, password, fullName, role } = await request.json() as any;
-        const newId = 'u_' + Math.random().toString(36).substring(2, 11);
+        const newId = id('u');
         await env.DB.prepare(
           'INSERT INTO users (id, email, password_hash, full_name, role, is_active) VALUES (?, ?, ?, ?, ?, 1)'
-        ).bind(newId, email, btoa(password || 'default123'), fullName, role || 'Student').run();
+        ).bind(newId, email, await hashPassword(password || crypto.randomUUID()), fullName, allowedRoles.has(role) ? role : 'Student').run();
 
         return jsonResponse({ id: newId, email, fullName, role, isActive: true }, 201);
       }
@@ -254,7 +341,7 @@ export default {
       // POST /api/question-banks
       if (method === 'POST') {
         const { name, description, category } = await request.json() as any;
-        const newBankId = 'qb_' + Math.random().toString(36).substring(2, 11);
+        const newBankId = id('qb');
         await env.DB.prepare(
           'INSERT INTO question_banks (id, name, description, category, created_by, is_archived) VALUES (?, ?, ?, ?, ?, 0)'
         ).bind(newBankId, name, description, category, currentUser.id).run();
@@ -322,7 +409,8 @@ export default {
         if (!isAdmin) return jsonResponse({ error: 'Forbidden' }, 403);
 
         const { bankId, question, options, correctAnswer, explanation, tags, difficulty } = await request.json() as any;
-        const newQuestId = 'q_' + Math.random().toString(36).substring(2, 11);
+        assertQuestion({ question, options, correctAnswer });
+        const newQuestId = id('q');
 
         await env.DB.prepare(
           'INSERT INTO questions (id, bank_id, question, options_json, correct_answer, explanation, tags, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -353,7 +441,7 @@ export default {
       const { bankId } = await request.json() as any;
       const { results } = await env.DB.prepare('SELECT id FROM questions WHERE bank_id = ?').bind(bankId).all();
       return jsonResponse({
-        sessionId: 'sess_' + Math.random().toString(36).substring(2, 11),
+        sessionId: id('sess'),
         questionIds: results.map((r: any) => r.id),
       });
     }
@@ -372,7 +460,7 @@ export default {
 
       let score = 0;
       const totalQuestions = qKeys.length;
-      const attemptId = 'att_' + Math.random().toString(36).substring(2, 11);
+      const attemptId = id('att');
 
       // Create Attempt Record
       const completedAt = new Date().toISOString();
@@ -381,9 +469,9 @@ export default {
       const batchStatements = [];
 
       for (const q of qKeys) {
-        const id = q.id as string;
+        const questionId = q.id as string;
         const correctAns = q.correct_answer as number;
-        const selected = answers[id] !== undefined ? answers[id] : -1;
+        const selected = answers[questionId] !== undefined ? answers[questionId] : -1;
         const isCore = selected === correctAns;
         if (isCore) score++;
 
@@ -392,9 +480,9 @@ export default {
           env.DB.prepare(
             'INSERT INTO attempt_answers (id, attempt_id, question_id, selected_answer, is_correct) VALUES (?, ?, ?, ?, ?)'
           ).bind(
-            'att_ans_' + Math.random().toString(36).substring(2, 11),
+            id('att_ans'),
             attemptId,
-            id,
+            questionId,
             selected,
             isCore ? 1 : 0
           )
@@ -408,7 +496,7 @@ export default {
         'INSERT INTO attempts (id, user_id, bank_id, score, total_questions, percentage, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).bind(
         attemptId,
-        currentUser.id,
+        currentUser!.id,
         bankId,
         score,
         totalQuestions,
@@ -426,8 +514,8 @@ export default {
       await env.DB.prepare(
         'INSERT INTO activity_logs (id, user_id, action, metadata) VALUES (?, ?, "EXAM_SUBMITTED", ?)'
       ).bind(
-        'log_' + Math.random().toString(36).substring(2, 11),
-        currentUser.id,
+        id('log'),
+        currentUser!.id,
         JSON.stringify({ attemptId, score, percentage })
       ).run();
 
@@ -459,17 +547,14 @@ export default {
         const verifiedList = [];
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i];
-          if (!q.question || !Array.isArray(q.options) || q.options.length < 2 || q.correctAnswer === undefined) {
-            return jsonResponse({ error: `Validation failure at index ${i}: incomplete fields.` }, 400);
-          }
-          if (q.correctAnswer < 0 || q.correctAnswer >= q.options.length) {
-            return jsonResponse({ error: `Validation failure at index ${i}: invalid correctAnswer index.` }, 400);
-          }
+          assertQuestion(q, i);
+          const existing = await env.DB.prepare('SELECT id FROM questions WHERE question = ? LIMIT 1').bind(q.question).first();
+          if (existing) continue;
           verifiedList.push(q);
         }
 
         // Create new bank
-        const bankId = 'qb_imp_' + Math.random().toString(36).substring(2, 11);
+        const bankId = id('qb_imp');
         await env.DB.prepare(
           'INSERT INTO question_banks (id, name, description, category, created_by) VALUES (?, ?, "Imported Bank via JSON", "General", ?)'
         ).bind(bankId, name, currentUser.id).run();
@@ -477,7 +562,7 @@ export default {
         // Prep questions inserts
         const batch = [];
         for (const q of verifiedList) {
-          const qId = 'q_' + Math.random().toString(36).substring(2, 11);
+          const qId = id('q');
           batch.push(
             env.DB.prepare(
               'INSERT INTO questions (id, bank_id, question, options_json, correct_answer, explanation, tags, difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, "Medium")'
@@ -506,7 +591,7 @@ export default {
           importedCount: verifiedList.length,
         });
       } catch (err: any) {
-        return jsonResponse({ error: err.message }, 550);
+        return jsonResponse({ error: err.message }, 400);
       }
     }
 
@@ -541,7 +626,7 @@ export default {
 
         // Parse file stream
         const fileContent = Uint8Array.from(atob(fileDataB64), c => c.charCodeAt(0));
-        const fileId = 'f_' + Math.random().toString(36).substring(2, 11);
+        const fileId = id('f');
         const objectKey = `materials/${fileId}_${fileName}`;
 
         // Stream binary file directly into Cloudflare R2
@@ -550,7 +635,7 @@ export default {
         });
 
         // Resolve absolute URL
-        const fileUrl = `https://assets-mrcpch.cloudflare-r2.com/${objectKey}`;
+        const fileUrl = `${env.R2_PUBLIC_BASE_URL || 'https://assets.example.com'}/${objectKey}`;
 
         await env.DB.prepare(
           'INSERT INTO study_materials (id, title, description, category, file_url, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)'
