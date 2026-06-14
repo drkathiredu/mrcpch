@@ -1,0 +1,6 @@
+{
+  "name": "MRCPCH Study Platform",
+  "description": "A comprehensive preparation platform for MRCPCH with dynamic exam mockups, question banks, study materials, and analytics dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

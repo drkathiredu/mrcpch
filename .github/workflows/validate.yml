@@ -1,0 +1,34 @@
+name: CI Build & Type Validation
+
+on:
+  push:
+    branches: [ main, master, dev ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-size: '20'
+          cache: 'npm'
+
+      - name: Install Monorepo Dependencies
+        run: npm ci
+
+      - name: Check TypeScript Compilation (root & frontend)
+        run: |
+          npm run lint
+          cd frontend
+          npm run lint || npx tsc --noEmit
+
+      - name: Verify Frontend Production Build Compile
+        run: |
+          cd frontend
+          npm run build

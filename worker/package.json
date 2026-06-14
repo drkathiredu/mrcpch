@@ -1,0 +1,18 @@
+{
+  "name": "mrcpch-api-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^3.109.0",
+    "@cloudflare/workers-types": "^4.20241218.0"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  }
+}

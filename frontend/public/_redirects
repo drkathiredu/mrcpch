@@ -1,0 +1,18 @@
+# =========================================================================
+# Cloudflare Pages Routing & API Proxy Rules
+# =========================================================================
+#
+# Vite automatic copy:
+# Any files in 'frontend/public' are copied directly to the 'dist' build root.
+# Cloudflare Pages dynamically reads this '_redirects' file upon deployment.
+
+# 1. API Proxing Configuration:
+# Redirects /api/* requests safely from Cloudflare Pages to the Worker edge backend.
+# REPLACE 'your-subdomain' with your active Cloudflare Worker subdomain:
+# (e.g. '/api/* https://mrcpch-study-platform.drkathirmrcpch.workers.dev/api/:splat 200')
+/api/* https://mrcpch-study-platform.your-subdomain.workers.dev/api/:splat 200
+
+# 2. SPA Fallback Routing:
+# Compiles route parameters of client-side react-router / state engines directly to index.html.
+# This prevents 404 errors when pages are reloaded or directly visited.
+/* /index.html 200
